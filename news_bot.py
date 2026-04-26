@@ -66,6 +66,7 @@ TELEGRAM_CHANNELS: list[str] = [
 MAX_ITEMS_PER_FEED = 15
 MAX_MSGS_PER_CHANNEL = 20
 MAX_ITEMS_FOR_CLAUDE = 50  # hard cap sent to Claude to stay under token rate limit
+MAX_ITEMS_PER_SOURCE = 4   # max items taken from each individual feed / channel
 DESCRIPTION_MAX_LEN = 400
 HTTP_TIMEOUT = 15.0
 RECENCY_MIN_HOURS = 0   # include stories right up to now
@@ -200,16 +201,27 @@ def filter_recent(items: list[NewsItem]) -> list[NewsItem]:
 # ── Claude input cap ─────────────────────────────────────────────────────────
 
 def cap_for_claude(items: list[NewsItem]) -> list[NewsItem]:
-    """Return at most MAX_ITEMS_FOR_CLAUDE items, Telegram channels first."""
-    telegram = [i for i in items if i.source.startswith("@")]
-    rss = [i for i in items if not i.source.startswith("@")]
-    combined = telegram + rss
-    capped = combined[:MAX_ITEMS_FOR_CLAUDE]
-    logger.info(
-        "Claude cap: %d total (%d TG + %d RSS) → %d sent",
-        len(items), len(telegram), len(rss), len(capped),
-    )
-    return capped
+    """Round-robin up to MAX_ITEMS_PER_SOURCE items from each source, capped at MAX_ITEMS_FOR_CLAUDE."""
+    by_source: dict[str, list[NewsItem]] = {}
+    for item in items:
+        by_source.setdefault(item.source, []).append(item)
+
+    result: list[NewsItem] = []
+    for round_i in range(MAX_ITEMS_PER_SOURCE):
+        for source_items in by_source.values():
+            if round_i < len(source_items):
+                result.append(source_items[round_i])
+            if len(result) >= MAX_ITEMS_FOR_CLAUDE:
+                break
+        if len(result) >= MAX_ITEMS_FOR_CLAUDE:
+            break
+
+    counts = {}
+    for item in result:
+        counts[item.source] = counts.get(item.source, 0) + 1
+    breakdown = "  ".join(f"{s}:{n}" for s, n in sorted(counts.items()))
+    logger.info("Claude cap: %d → %d sent  [%s]", len(items), len(result), breakdown)
+    return result
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
