@@ -67,7 +67,7 @@ MAX_ITEMS_PER_FEED = 15
 MAX_MSGS_PER_CHANNEL = 20
 DESCRIPTION_MAX_LEN = 400
 HTTP_TIMEOUT = 15.0
-RECENCY_MIN_HOURS = 6   # exclude stories newer than this
+RECENCY_MIN_HOURS = 0   # include stories right up to now
 RECENCY_MAX_HOURS = 12  # exclude stories older than this
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -99,10 +99,15 @@ async def _fetch_feed(
             description = description[:DESCRIPTION_MAX_LEN]
             link = entry.get("link") or ""
             ts = entry.get("published_parsed") or entry.get("updated_parsed")
-            published = (
-                datetime.fromtimestamp(calendar.timegm(ts), tz=timezone.utc)
-                if ts else None
-            )
+            if ts:
+                published = datetime.fromtimestamp(calendar.timegm(ts), tz=timezone.utc)
+                # Some feeds (e.g. walla, mako) publish IDT (UTC+3) without a
+                # timezone marker; feedparser then treats it as UTC, making the
+                # timestamp appear up to 3 h in the future. Correct it.
+                if published > datetime.now(tz=timezone.utc) + timedelta(hours=1):
+                    published -= timedelta(hours=3)
+            else:
+                published = None
             if title:
                 items.append(NewsItem(source=name, title=title,
                                       description=description, url=link,
@@ -185,9 +190,8 @@ def filter_recent(items: list[NewsItem]) -> list[NewsItem]:
         if i.published is not None and oldest <= i.published <= newest
     ]
     logger.info(
-        "Recency filter: %d → %d items (window %s–%s UTC)",
-        len(items), len(result),
-        oldest.strftime("%H:%M"), newest.strftime("%H:%M"),
+        "Recency filter: %d → %d items (last %dh, oldest cutoff %s UTC)",
+        len(items), len(result), RECENCY_MAX_HOURS, oldest.strftime("%H:%M"),
     )
     return result
 
