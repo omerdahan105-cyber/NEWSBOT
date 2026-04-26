@@ -67,7 +67,8 @@ MAX_ITEMS_PER_FEED = 15
 MAX_MSGS_PER_CHANNEL = 20
 DESCRIPTION_MAX_LEN = 400
 HTTP_TIMEOUT = 15.0
-RECENCY_HOURS = 12
+RECENCY_MIN_HOURS = 6   # exclude stories newer than this
+RECENCY_MAX_HOURS = 12  # exclude stories older than this
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -176,14 +177,17 @@ async def fetch_all_channels() -> list[NewsItem]:
 # ── Recency filter ────────────────────────────────────────────────────────────
 
 def filter_recent(items: list[NewsItem]) -> list[NewsItem]:
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=RECENCY_HOURS)
+    now = datetime.now(tz=timezone.utc)
+    oldest = now - timedelta(hours=RECENCY_MAX_HOURS)
+    newest = now - timedelta(hours=RECENCY_MIN_HOURS)
     result = [
         i for i in items
-        if i.published is not None and i.published >= cutoff
+        if i.published is not None and oldest <= i.published <= newest
     ]
     logger.info(
-        "Recency filter: %d → %d items (cutoff %s UTC)",
-        len(items), len(result), cutoff.strftime("%H:%M"),
+        "Recency filter: %d → %d items (window %s–%s UTC)",
+        len(items), len(result),
+        oldest.strftime("%H:%M"), newest.strftime("%H:%M"),
     )
     return result
 
@@ -355,7 +359,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-FETCH_TIMEOUT = 60.0  # seconds for combined RSS + Telegram fetch
+FETCH_TIMEOUT = 120.0  # seconds for combined RSS + Telegram fetch
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -370,30 +374,35 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         rss_task = asyncio.create_task(fetch_all_rss())
         channel_task = asyncio.create_task(fetch_all_channels())
 
+        rss_items: list[NewsItem] = []
+        channel_items: list[NewsItem] = []
+
         try:
             rss_items = await asyncio.wait_for(
                 asyncio.shield(rss_task),
-                timeout=deadline - loop.time(),
+                timeout=max(1.0, deadline - loop.time()),
             )
         except asyncio.TimeoutError:
             rss_task.cancel()
-            channel_task.cancel()
-            await loading.edit_text("❌ תם הזמן באיסוף RSS (60 שניות). נסה שוב.")
-            return
+            logger.warning("RSS fetch timed out, continuing with empty list")
 
         await loading.edit_text(
             f"⏳ (2/3) מאחזר ערוצי טלגרם... (RSS: {len(rss_items)} פריטים)"
         )
 
-        try:
-            channel_items = await asyncio.wait_for(
-                channel_task,
-                timeout=max(1.0, deadline - loop.time()),
-            )
-        except asyncio.TimeoutError:
+        remaining = deadline - loop.time()
+        if remaining > 1.0:
+            try:
+                channel_items = await asyncio.wait_for(
+                    channel_task,
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                channel_task.cancel()
+                logger.warning("Telegram fetch timed out, continuing with empty list")
+        else:
             channel_task.cancel()
-            await loading.edit_text("❌ תם הזמן באיסוף ערוצי טלגרם (60 שניות). נסה שוב.")
-            return
+            logger.warning("No time left for Telegram fetch, skipping")
 
         news_items = filter_recent(rss_items + channel_items)
         news_items = deduplicate(news_items)
