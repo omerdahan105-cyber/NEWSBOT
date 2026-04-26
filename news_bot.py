@@ -38,18 +38,12 @@ CLAUDE_MODEL = "claude-opus-4-7"
 
 # Israeli news RSS feeds
 RSS_FEEDS: dict[str, str] = {
-    "ynet":         "https://www.ynet.co.il/Integration/StoryRss2.xml",
-    "walla":        "https://rss.walla.co.il/feed/1",
-    "haaretz":      "https://www.haaretz.co.il/srv/haaretz-rss",
-    "mako":         "https://rss.mako.co.il/rss/News-n.xml",
-    "n12":          "https://www.mako.co.il/rss/news-n12.xml",
-    "maariv":       "https://www.maariv.co.il/rss/rssfeedsTech.aspx",
-    "israelhayom":  "https://www.israelhayom.co.il/rss.xml",
-    "calcalist":    "https://www.calcalist.co.il/rss/AjaxPage.aspx",
-    "globes":       "https://www.globes.co.il/webservice/rss/rssfeeds.aspx?act=1",
-    "ha-makom":     "https://www.ha-makom.co.il/",
-    "i24":          "https://www.i24news.tv/he",
-    "kan":          "https://www.kan.org.il/rss/",
+    "ynet":        "https://www.ynet.co.il/Integration/StoryRss2.xml",
+    "walla":       "https://rss.walla.co.il/feed/1",
+    "mako":        "https://www.mako.co.il/rss/31750a2610f26110VgnVCM1000005201000aRCRD.xml",
+    "maariv":      "https://www.maariv.co.il/rss/rssfeedsTech.aspx",
+    "israelhayom": "https://www.israelhayom.co.il/rss.xml",
+    "ha-makom":    "https://www.ha-makom.co.il/feed",
 }
 
 MAX_ITEMS_PER_FEED = 15
@@ -225,7 +219,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "שלום! אני בוט דיגסט חדשות ישראל 📰\n\n"
         "שלח /digest לקבלת סיכום חדשות מותאם אישית בעברית.\n\n"
-        "הדיגסט סורק 12 אתרי חדשות ישראליים ומתמקד בסיפורים מהשטח,\n"
+        "הדיגסט סורק 6 אתרי חדשות ישראליים ומתמקד בסיפורים מהשטח,\n"
         "מצוקה כלכלית, יוזמות אזרחיות, פעילות קהילתית ואירועי ביטחון."
     )
 
@@ -237,15 +231,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/start — הצג הודעת ברוכים הבאים\n"
         "/help — הצג הודעה זו\n\n"
         "*מקורות:*\n"
-        "ynet · walla · haaretz · mako · n12 · מעריב · ישראל היום · כלכליסט · גלובס\n"
-        "המקום · i24 · כאן",
+        "ynet · walla · mako · מעריב · ישראל היום · המקום",
         parse_mode="Markdown",
     )
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     loading = await update.message.reply_text(
-        "⏳ אוסף חדשות מ-12 מקורות ישראליים...\nכ-20 שניות"
+        "⏳ אוסף חדשות מ-6 מקורות ישראליים...\nכ-15 שניות"
     )
 
     try:
