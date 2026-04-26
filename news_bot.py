@@ -11,8 +11,10 @@ Env vars: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
+from difflib import SequenceMatcher
 
 import anthropic
 import feedparser
@@ -40,7 +42,7 @@ CLAUDE_MODEL = "claude-opus-4-7"
 RSS_FEEDS: dict[str, str] = {
     "ynet":        "https://www.ynet.co.il/Integration/StoryRss2.xml",
     "walla":       "https://rss.walla.co.il/feed/1",
-    "mako":        "https://www.mako.co.il/rss/31750a2610f26110VgnVCM1000005201000aRCRD.xml",
+    "mako":        "https://www.mako.co.il/rss/news-military.xml",
     "maariv":      "https://www.maariv.co.il/rss/rssfeedsTech.aspx",
     "israelhayom": "https://www.israelhayom.co.il/rss.xml",
     "ha-makom":    "https://www.ha-makom.co.il/feed",
@@ -96,6 +98,24 @@ async def fetch_all_rss() -> list[NewsItem]:
     return [item for batch in batches for item in batch]
 
 
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+def _normalize_title(title: str) -> str:
+    return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', title)).strip()
+
+def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
+    seen: list[str] = []
+    result: list[NewsItem] = []
+    for item in items:
+        key = _normalize_title(item.title)
+        if any(SequenceMatcher(None, key, s).ratio() > 0.7 for s in seen):
+            continue
+        seen.append(key)
+        result.append(item)
+    logger.info("Dedup: %d → %d items", len(items), len(result))
+    return result
+
+
 # ── Claude summarization ──────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """אתה עורך חדשותי מנוסה שמכין דיגסט יומי בעברית.
@@ -128,7 +148,7 @@ _[תאריך וזמן]_
 
 ━━━━━━━━━━━━━━━
 
-*[כותרת קצרה ומשכנעת]*
+[כותרת קצרה ומשכנעת](url)
 [2-3 משפטים תמציתיים המספרים את הסיפור]
 📍 *מקור:* [שם המקור המדויק]
 
@@ -142,6 +162,7 @@ _נסרקו [X] פריטים · נבחרו [Y] סיפורים_
 - תעדף תוכן שמגיע מהשטח ומאזרחים
 - כתוב בעברית ברורה, ישירה, ולא עיתונאית-שגרתית
 - **חובה:** כל סיפור חייב לכלול את שם המקור המדויק בשדה 📍 *מקור:*
+- **חובה:** אם לפריט יש url, הפוך את הכותרת לקישור לחיץ בפורמט Telegram: [כותרת](url)
 - אם אין סיפורים מעניינים — ציין זאת בכנות"""
 
 
@@ -153,6 +174,8 @@ async def summarize_with_claude(news_items: list[NewsItem]) -> str:
     ]
     for item in news_items:
         sections.append(f"[{item.source.upper()}] {item.title}")
+        if item.url:
+            sections.append(f"  url: {item.url}")
         if item.description:
             sections.append(f"  {item.description}")
         sections.append("")
@@ -242,8 +265,8 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
     try:
-        news_items = await fetch_all_rss()
-        logger.info("Digest: %d RSS items", len(news_items))
+        news_items = deduplicate(await fetch_all_rss())
+        logger.info("Digest: %d items after dedup", len(news_items))
 
         summary = await summarize_with_claude(news_items)
 
