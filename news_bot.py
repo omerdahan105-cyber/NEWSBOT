@@ -48,7 +48,22 @@ RSS_FEEDS: dict[str, str] = {
     "ha-makom":    "https://www.ha-makom.co.il/feed",
 }
 
+# Public Telegram channels scraped via t.me/s/ web preview (no MTProto needed)
+TELEGRAM_CHANNELS: list[str] = [
+    "KanNewsTwitter",
+    "amitsegal",
+    "N12chat",
+    "N12nws",
+    "lieldaphna",
+    "danielamram3",
+    "moriahdoron",
+    "MichaelShemesh",
+    "grinzaig",
+    "BenTzionM",
+]
+
 MAX_ITEMS_PER_FEED = 15
+MAX_MSGS_PER_CHANNEL = 20
 DESCRIPTION_MAX_LEN = 400
 HTTP_TIMEOUT = 15.0
 
@@ -98,6 +113,51 @@ async def fetch_all_rss() -> list[NewsItem]:
     return [item for batch in batches for item in batch]
 
 
+# ── Telegram channel scraping (t.me/s/ public web preview) ───────────────────
+
+async def _fetch_channel(
+    client: httpx.AsyncClient, channel: str
+) -> list[NewsItem]:
+    url = f"https://t.me/s/{channel}"
+    try:
+        resp = await client.get(url, timeout=HTTP_TIMEOUT)
+        if resp.status_code != 200:
+            logger.warning("Telegram @%s: HTTP %s", channel, resp.status_code)
+            return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items: list[NewsItem] = []
+        for msg in soup.select(".tgme_widget_message")[-MAX_MSGS_PER_CHANNEL:]:
+            text_el = msg.select_one(".tgme_widget_message_text")
+            if not text_el:
+                continue
+            text = text_el.get_text(" ").strip()
+            if len(text) < 20:
+                continue
+            date_el = msg.select_one(".tgme_widget_message_date")
+            link = date_el.get("href", "") if date_el else ""
+            lines = text.split("\n", 1)
+            title = lines[0][:200]
+            description = lines[1].strip()[:DESCRIPTION_MAX_LEN] if len(lines) > 1 else ""
+            items.append(NewsItem(
+                source=f"@{channel}", title=title,
+                description=description, url=link,
+            ))
+        logger.info("Telegram @%s → %d messages", channel, len(items))
+        return items
+    except Exception as exc:
+        logger.warning("Telegram @%s failed: %s", channel, exc)
+        return []
+
+
+async def fetch_all_channels() -> list[NewsItem]:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsDigestBot/1.0)"}
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+        batches = await asyncio.gather(
+            *[_fetch_channel(client, ch) for ch in TELEGRAM_CHANNELS]
+        )
+    return [item for batch in batches for item in batch]
+
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 def _normalize_title(title: str) -> str:
@@ -121,6 +181,8 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
 SYSTEM_PROMPT = """אתה עורך חדשותי מנוסה שמכין דיגסט יומי בעברית.
 
 **משימה:** לסנן מתוך רשימת פריטי חדשות ומקורות מגוונים ולהפיק דיגסט קצר ואיכותי.
+
+**מקורות הקלט:** כתבות RSS מאתרי חדשות + הודעות מערוצי טלגרם של עיתונאים ישראלים (מסומנים @channelname).
 
 **סוגי סיפורים שאתה מחפש:**
 - סיפורים בלעדיים וחקירות עיתונאיות
@@ -242,8 +304,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "שלום! אני בוט דיגסט חדשות ישראל 📰\n\n"
         "שלח /digest לקבלת סיכום חדשות מותאם אישית בעברית.\n\n"
-        "הדיגסט סורק 6 אתרי חדשות ישראליים ומתמקד בסיפורים מהשטח,\n"
-        "מצוקה כלכלית, יוזמות אזרחיות, פעילות קהילתית ואירועי ביטחון."
+        "הדיגסט סורק 6 אתרי חדשות ישראליים + 10 ערוצי טלגרם של עיתונאים,\n"
+        "ומתמקד בסיפורים מהשטח, מצוקה כלכלית, יוזמות אזרחיות ואירועי ביטחון."
     )
 
 
@@ -253,19 +315,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/digest — הפק דיגסט חדשות עכשיו\n"
         "/start — הצג הודעת ברוכים הבאים\n"
         "/help — הצג הודעה זו\n\n"
-        "*מקורות:*\n"
-        "ynet · walla · mako · מעריב · ישראל היום · המקום",
+        "*מקורות RSS:*\n"
+        "ynet · walla · mako · מעריב · ישראל היום · המקום\n\n"
+        "*ערוצי טלגרם:*\n"
+        "@KanNewsTwitter · @amitsegal · @N12chat · @N12nws\n"
+        "@lieldaphna · @danielamram3 · @moriahdoron\n"
+        "@MichaelShemesh · @grinzaig · @BenTzionM",
         parse_mode="Markdown",
     )
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     loading = await update.message.reply_text(
-        "⏳ אוסף חדשות מ-6 מקורות ישראליים...\nכ-15 שניות"
+        "⏳ אוסף חדשות מ-6 אתרי RSS + 10 ערוצי טלגרם...\nכ-20 שניות"
     )
 
     try:
-        news_items = deduplicate(await fetch_all_rss())
+        rss_items, channel_items = await asyncio.gather(
+            fetch_all_rss(), fetch_all_channels()
+        )
+        news_items = deduplicate(rss_items + channel_items)
         logger.info("Digest: %d items after dedup", len(news_items))
 
         summary = await summarize_with_claude(news_items)
