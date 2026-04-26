@@ -9,11 +9,12 @@ Env vars: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
 """
 
 import asyncio
+import calendar
 import logging
 import os
 import re
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 import anthropic
@@ -66,6 +67,7 @@ MAX_ITEMS_PER_FEED = 15
 MAX_MSGS_PER_CHANNEL = 20
 DESCRIPTION_MAX_LEN = 400
 HTTP_TIMEOUT = 15.0
+RECENCY_HOURS = 12
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -75,6 +77,7 @@ class NewsItem:
     title: str
     description: str
     url: str = ""
+    published: datetime | None = field(default=None)
 
 
 # ── RSS fetching ──────────────────────────────────────────────────────────────
@@ -94,9 +97,15 @@ async def _fetch_feed(
             description = BeautifulSoup(raw_desc, "html.parser").get_text(" ").strip()
             description = description[:DESCRIPTION_MAX_LEN]
             link = entry.get("link") or ""
+            ts = entry.get("published_parsed") or entry.get("updated_parsed")
+            published = (
+                datetime.fromtimestamp(calendar.timegm(ts), tz=timezone.utc)
+                if ts else None
+            )
             if title:
                 items.append(NewsItem(source=name, title=title,
-                                      description=description, url=link))
+                                      description=description, url=link,
+                                      published=published))
         logger.info("RSS %s → %d items", name, len(items))
         return items
     except Exception as exc:
@@ -135,12 +144,18 @@ async def _fetch_channel(
                 continue
             date_el = msg.select_one(".tgme_widget_message_date")
             link = date_el.get("href", "") if date_el else ""
+            time_el = msg.select_one(".tgme_widget_message_date time")
+            dt_str = time_el.get("datetime", "") if time_el else ""
+            try:
+                published = datetime.fromisoformat(dt_str) if dt_str else None
+            except ValueError:
+                published = None
             lines = text.split("\n", 1)
             title = lines[0][:200]
             description = lines[1].strip()[:DESCRIPTION_MAX_LEN] if len(lines) > 1 else ""
             items.append(NewsItem(
                 source=f"@{channel}", title=title,
-                description=description, url=link,
+                description=description, url=link, published=published,
             ))
         logger.info("Telegram @%s → %d messages", channel, len(items))
         return items
@@ -156,6 +171,21 @@ async def fetch_all_channels() -> list[NewsItem]:
             *[_fetch_channel(client, ch) for ch in TELEGRAM_CHANNELS]
         )
     return [item for batch in batches for item in batch]
+
+
+# ── Recency filter ────────────────────────────────────────────────────────────
+
+def filter_recent(items: list[NewsItem]) -> list[NewsItem]:
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=RECENCY_HOURS)
+    result = [
+        i for i in items
+        if i.published is not None and i.published >= cutoff
+    ]
+    logger.info(
+        "Recency filter: %d → %d items (cutoff %s UTC)",
+        len(items), len(result), cutoff.strftime("%H:%M"),
+    )
+    return result
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -334,8 +364,9 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         rss_items, channel_items = await asyncio.gather(
             fetch_all_rss(), fetch_all_channels()
         )
-        news_items = deduplicate(rss_items + channel_items)
-        logger.info("Digest: %d items after dedup", len(news_items))
+        news_items = filter_recent(rss_items + channel_items)
+        news_items = deduplicate(news_items)
+        logger.info("Digest: %d items after filter+dedup", len(news_items))
 
         summary = await summarize_with_claude(news_items)
 
