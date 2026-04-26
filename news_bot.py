@@ -355,18 +355,51 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+FETCH_TIMEOUT = 60.0  # seconds for combined RSS + Telegram fetch
+
+
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    loading = await update.message.reply_text(
-        "⏳ אוסף חדשות מ-6 אתרי RSS + 10 ערוצי טלגרם...\nכ-20 שניות"
-    )
+    loading = await update.message.reply_text("⏳ (1/3) מאחזר כתבות RSS...")
 
     try:
-        rss_items, channel_items = await asyncio.gather(
-            fetch_all_rss(), fetch_all_channels()
+        # Both tasks start immediately in parallel; we await them one by one
+        # so we can show per-stage progress while keeping full concurrency.
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + FETCH_TIMEOUT
+
+        rss_task = asyncio.create_task(fetch_all_rss())
+        channel_task = asyncio.create_task(fetch_all_channels())
+
+        try:
+            rss_items = await asyncio.wait_for(
+                asyncio.shield(rss_task),
+                timeout=deadline - loop.time(),
+            )
+        except asyncio.TimeoutError:
+            rss_task.cancel()
+            channel_task.cancel()
+            await loading.edit_text("❌ תם הזמן באיסוף RSS (60 שניות). נסה שוב.")
+            return
+
+        await loading.edit_text(
+            f"⏳ (2/3) מאחזר ערוצי טלגרם... (RSS: {len(rss_items)} פריטים)"
         )
+
+        try:
+            channel_items = await asyncio.wait_for(
+                channel_task,
+                timeout=max(1.0, deadline - loop.time()),
+            )
+        except asyncio.TimeoutError:
+            channel_task.cancel()
+            await loading.edit_text("❌ תם הזמן באיסוף ערוצי טלגרם (60 שניות). נסה שוב.")
+            return
+
         news_items = filter_recent(rss_items + channel_items)
         news_items = deduplicate(news_items)
         logger.info("Digest: %d items after filter+dedup", len(news_items))
+
+        await loading.edit_text("⏳ (3/3) מסכם עם Claude AI...")
 
         summary = await summarize_with_claude(news_items)
 
