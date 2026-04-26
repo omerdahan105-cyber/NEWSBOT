@@ -212,30 +212,38 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
 
 # ── Claude summarization ──────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """אתה עורך חדשותי מנוסה שמכין דיגסט יומי בעברית.
+SYSTEM_PROMPT = """אתה עורך של עיתון חקירות ותיק. המשימה שלך: לסרוק עשרות כותרות ולמצוא את הסיפורים שהציבור לא יודע — לא את מה שכולם כבר מדווחים.
 
-**משימה:** לסנן מתוך רשימת פריטי חדשות ומקורות מגוונים ולהפיק דיגסט קצר ואיכותי.
+**קריטריון הסינון המרכזי — שאל את עצמך על כל סיפור:**
+"האם עיתונאי חקירות בכיר יאמר: 'רק אני יודע את זה' או 'זה לא מסוקר מספיק'?"
+אם כן — כלול. אם לא — הוצא.
 
-**מקורות הקלט:** כתבות RSS מאתרי חדשות + הודעות מערוצי טלגרם של עיתונאים ישראלים (מסומנים @channelname).
+**מקורות הקלט:** כתבות RSS מאתרי חדשות ישראליים + הודעות מערוצי טלגרם של עיתונאים (מסומנים @channelname). לכל פריט מצורפים: time (שעת פרסום), url, ותיאור קצר.
 
-**סוגי סיפורים שאתה מחפש:**
-- סיפורים בלעדיים וחקירות עיתונאיות
-- עדויות ישירות מהשטח, דיווחים של אזרחים רגילים
-- מצוקה כלכלית — יוקר המחיה, עסקים קטנים, פרנסה, מחירים
-- אירועי ביטחון שדווחו על ידי תושבים ועדי ראייה
-- בעיות עירוניות ומוניציפליות שמשפיעות על תושבים
-- מחאות חברתיות, הפגנות, עצומות
-- סיפורים אנושיים שנקברים מתחת לכותרות הגדולות
-- חשיפות, סקופים, פרטים שלא ברורים מהסיקור המיינסטרים
-- יוזמות אזרחיות חיוביות ונחמדות
+**סיפורים שכן מעניינים:**
+- מחדלים וכשלים מוסדיים שלא זכו לסיקור הולם
+- דיווחים ספציפיים מהשטח עם שמות, מקומות ומספרים קונקרטיים
+- סטטיסטיקות מפתיעות שחושפות מגמה נסתרת
+- בעיות מערכתיות שנקברות מתחת לכותרות הגדולות
+- עדויות אישיות ספציפיות עם פרטים מוחשיים
+- דפוסי פשע או שחיתות שנחשפים לראשונה
+- יוזמות אזרחיות חיוביות ופעילות קהילתית שלא מסוקרת
 - סיפורים אנושיים מעוררי השראה מהשטח
-- פעילות קהילתית וחברתית
 
-**מה להדיר:**
-- כותרות שגרתיות שכולם כבר יודעים (הצהרות פוליטיות רגילות, הודעות ממשלה שגרתיות)
-- אופנה, גוסיפ, בידור, ספורט
-- ידיעות PR ופרסומות סמויות
-- כפילויות — אם אותו סיפור מופיע ממספר מקורות, בחר הגרסה הטובה ביותר
+**דוגמאות לסיפורים שכן:**
+✓ "מחדל המיירטים: המלאי הדליל וההחלטה המודעת לא ליירט"
+✓ "מזכיר את מה שקדם ל-7/10: אימוני ירי מצריים 100 מטר מהגדר"
+✓ "1 מכל 5 בני נוער חווים אלימות ומתחמשים להגנה"
+✓ "מגיפת החניונים: ילודים נדבקים, חולי סרטן בתנאים מחפירים"
+✓ "חיכו לו רעולי פנים מתחת לבית"
+✓ "טרור הפרוטקשן: חוב של אלפי שקלים שתפח למאות אלפים"
+
+**סיפורים שלא מעניינים — הוצא אוטומטית:**
+✗ רצח, תאונה, אירוע פלילי שגרתי
+✗ הצהרות פוליטיות ונאומים
+✗ תוצאות משפט שגרתיות
+✗ כותרות שמופיעות בכל האתרים
+✗ ירי, פיגוע, מלחמה שגרתית
 
 **פורמט הפלט (Telegram Markdown):**
 
@@ -245,8 +253,8 @@ _[תאריך וזמן]_
 ━━━━━━━━━━━━━━━
 
 [כותרת קצרה ומשכנעת](url)
-[2-3 משפטים תמציתיים המספרים את הסיפור]
-📍 *מקור:* [שם המקור המדויק]
+[2-3 משפטים תמציתיים — מה הוחבא, מה מפתיע, מה קרה בשטח]
+📍 *מקור:* [שם המקור] | [שעת פרסום מהשדה time]
 
 [חזור על הפורמט לכל סיפור]
 
@@ -254,12 +262,12 @@ _[תאריך וזמן]_
 _נסרקו [X] פריטים · נבחרו [Y] סיפורים_
 
 **הנחיות:**
-- בחר 5–8 סיפורים בלבד — רק הטובים ביותר
-- תעדף תוכן שמגיע מהשטח ומאזרחים
+- בחר 5–8 סיפורים בלבד — רק הטובים ביותר לפי הקריטריון הנ"ל
 - כתוב בעברית ברורה, ישירה, ולא עיתונאית-שגרתית
-- **חובה:** כל סיפור חייב לכלול את שם המקור המדויק בשדה 📍 *מקור:*
-- **חובה:** אם לפריט יש url, הפוך את הכותרת לקישור לחיץ בפורמט Telegram: [כותרת](url)
-- אם אין סיפורים מעניינים — ציין זאת בכנות"""
+- **חובה:** כל סיפור חייב לכלול שם מקור ושעת פרסום: 📍 *מקור:* [שם] | [שעה]
+- **חובה:** אם לפריט יש url, הפוך את הכותרת לקישור לחיץ: [כותרת](url)
+- כפילויות — בחר את הגרסה הטובה ביותר
+- אם אין סיפורים ראויים לפי הקריטריון — ציין זאת בכנות"""
 
 
 async def summarize_with_claude(news_items: list[NewsItem]) -> str:
@@ -270,6 +278,8 @@ async def summarize_with_claude(news_items: list[NewsItem]) -> str:
     ]
     for item in news_items:
         sections.append(f"[{item.source.upper()}] {item.title}")
+        if item.published:
+            sections.append(f"  time: {item.published.strftime('%H:%M')}")
         if item.url:
             sections.append(f"  url: {item.url}")
         if item.description:
@@ -359,15 +369,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-FETCH_TIMEOUT = 120.0  # seconds for combined RSS + Telegram fetch
+FETCH_TIMEOUT = 120.0   # seconds budget for RSS + Telegram combined
+GLOBAL_TIMEOUT = 300.0  # hard cap on the entire /digest operation (5 minutes)
+
+
+def _format_fallback(items: list[NewsItem]) -> str:
+    """Simple bullet list sent when the global timeout fires before Claude responds."""
+    lines = [f"⚠️ *תם הזמן — {len(items)} פריטים שנאספו:*\n"]
+    for item in items[:15]:
+        time_str = f" | {item.published.strftime('%H:%M')}" if item.published else ""
+        lines.append(f"• [{item.source}{time_str}] {item.title}")
+    return "\n".join(lines)
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     loading = await update.message.reply_text("⏳ (1/3) מאחזר כתבות RSS...")
+    collected: list[NewsItem] = []  # populated before Claude; used as fallback on timeout
 
-    try:
-        # Both tasks start immediately in parallel; we await them one by one
-        # so we can show per-stage progress while keeping full concurrency.
+    async def _run() -> None:
+        nonlocal collected
+
         loop = asyncio.get_event_loop()
         deadline = loop.time() + FETCH_TIMEOUT
 
@@ -394,8 +415,7 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if remaining > 1.0:
             try:
                 channel_items = await asyncio.wait_for(
-                    channel_task,
-                    timeout=remaining,
+                    channel_task, timeout=remaining,
                 )
             except asyncio.TimeoutError:
                 channel_task.cancel()
@@ -404,17 +424,26 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             channel_task.cancel()
             logger.warning("No time left for Telegram fetch, skipping")
 
-        news_items = filter_recent(rss_items + channel_items)
-        news_items = deduplicate(news_items)
-        logger.info("Digest: %d items after filter+dedup", len(news_items))
+        collected = deduplicate(filter_recent(rss_items + channel_items))
+        logger.info("Digest: %d items after filter+dedup", len(collected))
 
         await loading.edit_text("⏳ (3/3) מסכם עם Claude AI...")
 
-        summary = await summarize_with_claude(news_items)
-
+        summary = await summarize_with_claude(collected)
         await loading.delete()
         await _reply_safe(update, summary)
 
+    try:
+        await asyncio.wait_for(_run(), timeout=GLOBAL_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.error("Global digest timeout after %ds", GLOBAL_TIMEOUT)
+        if collected:
+            try:
+                await loading.edit_text(_format_fallback(collected), parse_mode="Markdown")
+            except BadRequest:
+                await loading.edit_text(_format_fallback(collected))
+        else:
+            await loading.edit_text("❌ תם הזמן (5 דקות) לפני שנאסף חומר. נסה שוב.")
     except anthropic.APIError as exc:
         logger.error("Claude API error: %s", exc)
         await loading.edit_text("❌ שגיאה בשירות Claude. בדוק את מפתח ה-API.")
